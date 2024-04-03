@@ -22,7 +22,7 @@ from torch.distributed.tensor.parallel import (
     RowwiseParallel,
     SequenceParallel,
 )
-
+from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.utils.checkpoint import _pt2_selective_checkpoint_context_fn_gen, checkpoint
 
 from torchtrain.config_manager import JobConfig
@@ -126,6 +126,50 @@ def get_tp_parallel_strategy(
     return RowwiseParallel, ColwiseParallel
 
 
+def enable_fsdp(model: torch.nn.Module, dp_mesh, job_config: JobConfig):
+    # TODO: Expose `reduce_dtype` as a config option.
+    mp_policy = MixedPrecisionPolicy(
+        param_dtype=torch.bfloat16, reduce_dtype=torch.float32
+    )
+    ac_mode = job_config.activation_checkpoint.mode
+    fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
+    for layer_id, transformer_block in enumerate(model.layers):
+        if job_config.activation_checkpoint.mode in ("full", "selective"):
+            transformer_block = checkpoint_wrapper(
+                transformer_block, job_config.activation_checkpoint
+            )
+        # As an optimization, do not reshard after forward for the last
+        # transformer block since FSDP would prefetch it immediately
+        reshard_after_forward = layer_id < len(model.layers) - 1
+        fully_shard(
+            transformer_block,
+            **fsdp_config,
+            reshard_after_forward=reshard_after_forward,
+        )
+        model.layers[layer_id] = transformer_block
+    model = fully_shard(model, **fsdp_config)
+    if ac_mode in ("full", "selective"):
+        logger.info(f"Applied {ac_mode} activation checkpointing to the model")
+    logger.info("Applied FSDP to the model")
+
+def enable_ddp(model: torch.nn.Module, dp_mesh, job_config: JobConfig):
+    ac_mode = job_config.activation_checkpoint.mode
+    for layer_id, transformer_block in enumerate(model.layers):
+        if job_config.activation_checkpoint.mode in ("full", "selective"):
+            transformer_block = checkpoint_wrapper(
+                transformer_block, job_config.activation_checkpoint
+            )
+            model.layers[layer_id] = transformer_block
+
+    if job_config.train.compile:
+        torch._dynamo.config.optimize_ddp = "python_reducer"
+    model = DDP(model, device_mesh=dp_mesh)
+
+    if ac_mode in ("full", "selective"):
+        logger.info(f"Applied {ac_mode} activation checkpointing to the model")
+    logger.info("Applied DDP to the model")
+
+
 def parallelize_llama(model, world_mesh, parallel_dims, job_config: JobConfig):
     """
     Apply parallelisms and activation checkpointing to the model.
@@ -208,29 +252,11 @@ def parallelize_llama(model, world_mesh, parallel_dims, job_config: JobConfig):
     if parallel_dims.dp_enabled:
         dp_mesh = world_mesh["dp"] if world_mesh.ndim > 1 else world_mesh
         assert dp_mesh.mesh_dim_names == ("dp",), dp_mesh.mesh_dim_names
-        # TODO: Expose `reduce_dtype` as a config option.
-        mp_policy = MixedPrecisionPolicy(
-            param_dtype=torch.bfloat16, reduce_dtype=torch.float32
-        )
-        ac_mode = job_config.activation_checkpoint.mode
-        fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
-        for layer_id, transformer_block in enumerate(model.layers):
-            if job_config.activation_checkpoint.mode in ("full", "selective"):
-                transformer_block = checkpoint_wrapper(
-                    transformer_block, job_config.activation_checkpoint
-                )
-            # As an optimization, do not reshard after forward for the last
-            # transformer block since FSDP would prefetch it immediately
-            reshard_after_forward = layer_id < len(model.layers) - 1
-            fully_shard(
-                transformer_block,
-                **fsdp_config,
-                reshard_after_forward=reshard_after_forward,
-            )
-            model.layers[layer_id] = transformer_block
-        model = fully_shard(model, **fsdp_config)
-        if ac_mode in ("full", "selective"):
-            logger.info(f"Applied {ac_mode} activation checkpointing to the model")
-        logger.info("Applied FSDP to the model")
+        if parallel_dims.dp_type.lower() == "fsdp":
+            enable_fsdp(model, dp_mesh, JobConfig)
+        elif parallel_dims.dp_type.lower() == "ddp":
+            enable_ddp(model, dp_mesh, JobConfig)
+        else:
+            raise ValueError("Incorrect DP type.")
 
     return model

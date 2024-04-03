@@ -16,6 +16,7 @@ models_parallelize_fns = {
 @dataclass
 class ParallelDims:
     dp: int
+    dp_type: str
     tp: int
     pp: int
     world_size: int

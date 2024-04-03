@@ -124,6 +124,7 @@ def main(job_config: JobConfig):
     world_size = int(os.environ["WORLD_SIZE"])
     parallel_dims = ParallelDims(
         dp=job_config.training.data_parallel_degree,
+        dp_type=job_config.training.data_parallel_type,
         tp=job_config.training.tensor_parallel_degree,
         pp=job_config.training.pipeline_parallel_degree,
         world_size=world_size,
@@ -292,7 +293,10 @@ def main(job_config: JobConfig):
                 loss = F.cross_entropy(pred.flatten(0, 1), labels.flatten(0, 1))
 
                 # backward on scaled loss to create scaled gradients
-                scaler.scale(loss).backward()
+                with torch._dynamo.utils.maybe_enable_compiled_autograd(
+                    job_config.training.compiled_autograd
+                ):
+                    scaler.scale(loss).backward()
 
             # clip gradients (after unscaling gradients of the optimizer's params)
             scaler.unscale_(optimizer)
