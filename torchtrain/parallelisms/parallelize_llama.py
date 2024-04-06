@@ -10,6 +10,7 @@ from typing import Tuple
 import torch
 
 from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy
+from torch.distributed._composable.replicate import replicate
 from torch.distributed._tensor import Replicate, Shard
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper as ptd_checkpoint_wrapper,
@@ -152,6 +153,8 @@ def enable_fsdp(model: torch.nn.Module, dp_mesh, job_config: JobConfig):
         logger.info(f"Applied {ac_mode} activation checkpointing to the model")
     logger.info("Applied FSDP to the model")
 
+    return model
+
 def enable_ddp(model: torch.nn.Module, dp_mesh, job_config: JobConfig):
     ac_mode = job_config.activation_checkpoint.mode
     for layer_id, transformer_block in enumerate(model.layers):
@@ -161,13 +164,19 @@ def enable_ddp(model: torch.nn.Module, dp_mesh, job_config: JobConfig):
             )
             model.layers[layer_id] = transformer_block
 
-    if job_config.train.compile:
-        torch._dynamo.config.optimize_ddp = "python_reducer"
-    model = DDP(model, device_mesh=dp_mesh)
+    if job_config.training.compile:
+        if job_config.training.compiled_autograd:
+            torch._dynamo.config.optimize_ddp = "python_reducer"
+        else:
+            torch._dynamo.config.optimize_ddp = "ddp_optimizer"
+    # model = DDP(model, device_mesh=dp_mesh, bucket_cap_mb=100)
+    model = replicate(model, device_mesh=dp_mesh, bucket_cap_mb=100)
 
     if ac_mode in ("full", "selective"):
         logger.info(f"Applied {ac_mode} activation checkpointing to the model")
     logger.info("Applied DDP to the model")
+
+    return model
 
 
 def parallelize_llama(model, world_mesh, parallel_dims, job_config: JobConfig):
@@ -253,9 +262,9 @@ def parallelize_llama(model, world_mesh, parallel_dims, job_config: JobConfig):
         dp_mesh = world_mesh["dp"] if world_mesh.ndim > 1 else world_mesh
         assert dp_mesh.mesh_dim_names == ("dp",), dp_mesh.mesh_dim_names
         if parallel_dims.dp_type.lower() == "fsdp":
-            enable_fsdp(model, dp_mesh, JobConfig)
+            model = enable_fsdp(model, dp_mesh, job_config)
         elif parallel_dims.dp_type.lower() == "ddp":
-            enable_ddp(model, dp_mesh, JobConfig)
+            model = enable_ddp(model, dp_mesh, job_config)
         else:
             raise ValueError("Incorrect DP type.")
 

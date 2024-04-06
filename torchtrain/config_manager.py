@@ -204,7 +204,7 @@ class JobConfig:
             help="Whether to compile the model.",
         )
         self.parser.add_argument(
-            "--training.compile_autograd",
+            "--training.compiled_autograd",
             action="store_true",
             help="Whether to compile the model.",
         )
@@ -276,7 +276,7 @@ class JobConfig:
         self.parser.add_argument(
             "--comm.train_timeout_seconds",
             type=int,
-            default=5,
+            default=20,
             help=(
                 "Timeout for communication operations after the first train step-"
                 "usually a tighter bound than during initialization."

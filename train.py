@@ -198,9 +198,13 @@ def main(job_config: JobConfig):
     model = models_parallelize_fns[model_name](
         model, world_mesh, parallel_dims, job_config
     )
+    for p in model.parameters():
+        logger.info(f"{p._post_accumulate_grad_hooks=} {id(p)}")
     # allocate sharded model on GPU and initialize weights via DTensor
     model.to_empty(device="cuda")
     model.init_weights()
+    for p in model.parameters():
+        logger.info(f"{p._post_accumulate_grad_hooks=} {id(p)}")
 
     # build optimizer after applying parallelisms to the model
     optimizer = build_optimizer(model, job_config)
@@ -316,6 +320,7 @@ def main(job_config: JobConfig):
             current_loss = loss.item()
             losses_since_last_log.append(current_loss)
 
+            torch.cuda.synchronize()
             # log metrics
             if (
                 train_state.step == 1
@@ -372,7 +377,7 @@ def main(job_config: JobConfig):
                 metric_logger.log(metrics, step=train_state.step)
 
                 if _is_local_logging:
-                    logger.info(
+                    logger.warning(
                         f"{Color.cyan}step: {train_state.step:2}  "
                         f"{Color.green}loss: {global_avg_loss:7.4f}  "
                         f"{Color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
@@ -381,7 +386,7 @@ def main(job_config: JobConfig):
                         f"{Color.magenta}mfu: {mfu:.2f}%{Color.reset}"
                     )
                 else:
-                    logger.info(
+                    logger.warning(
                         f"step: {train_state.step:2}  "
                         f"loss: {global_avg_loss:7.4f}  "
                         f"memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"

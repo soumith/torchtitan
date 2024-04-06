@@ -31,14 +31,20 @@ lr = 3e-4
 
 [training]
 batch_size = 8
-seq_len = 2048
+seq_len = 512
 warmup_steps = 200  # lr scheduler warm up
 max_norm = 1.0  # grad norm clipping
-steps = 10
+steps = 1000
 data_parallel_degree = -1
 data_parallel_type = "ddp"
 tensor_parallel_degree = 1
 pipeline_parallel_degree = 1
 fp8_linear = ""
-compile = false
+compile = true
+compiled_autograd = false
 dataset = "alpaca"
+
+
+[activation_checkpoint]
+mode = "None"  # ['none', 'full', 'selective']
+selective_ac_option = "2"  # 'int' = ac every positive int layer or 'op', ac based on ops policy
