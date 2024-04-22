@@ -188,10 +188,12 @@ class CheckpointManager:
                 return False
             step = max(step_counts)
 
+        # We won't have optimizer states to load, if we are loading a seed checkpoint
+        states = {"model": self.states["model"]} if step == 0 else self.states
         logger.info(f"Loading the checkpoint at step {step}")
         begin = time.monotonic()
         dcp.load(
-            self.states,
+            states,
             checkpoint_id=self._create_checkpoint_id(step),
         )
         logger.info(
